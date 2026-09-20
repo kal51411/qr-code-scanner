@@ -1,156 +1,95 @@
-# Retail Scanner Pro 🛒⚡
+# Retail Scanner Pro
 
-An ultra-fast, privacy-first, browser-based Barcode and QR code scanner engineered like a real retail POS terminal.
+A browser-based barcode/QR scanner that actually feels like a retail scanner. Point camera → hear beep → see product info. No frame uploads, no nonsense.
 
-The application decodes standard barcodes (EAN-13, EAN-8, UPC-A, UPC-E, Code 128) and QR codes directly inside the user's browser in real-time, then performs asynchronous product lookups across local inventory databases and public registries like Open Food Facts.
+## What this does
 
----
+Opens your camera, scans barcodes in real-time using the browser's native `BarcodeDetector` (hardware accelerated on Chrome/Android) with a ZXing fallback for Safari/Firefox. When it finds a code, it plays a crisp beep, shows the barcode instantly, then fetches product details asynchronously.
 
-## 🌟 Key Features
+**Desktop:** Camera left, product card right, history bottom  
+**Mobile:** Camera first, product below, history below that
 
-- **⚡ Hardware-Accelerated Browser Scanning**: Uses native browser `BarcodeDetector` when available, with a fallback to `@zxing/library` for universal browser compatibility (iOS Safari, Android Chrome, Firefox, Desktop).
-- **🔒 Privacy First Architecture**: **Zero camera frames, video data, or raw pixels are sent to any backend**. All barcode detection runs 100% client-side in browser memory.
-- **🔊 POS Audio & Visual Feedback**: Synthesizes a crisp electronic scanner beep via Web Audio API and briefly flashes the reticle green upon successful scan.
-- **⏱️ Anti-Spam & Deduplication**: Smart frame throttling (8 scans/sec) with debounce cooldowns to prevent repetitive queries for the same product on consecutive frames.
-- **📱 Responsive Retail UI**:
-  - **Desktop**: Dual-column layout (`Camera Feed` on left, `Product Card` on right, `Session Log` below).
-  - **Mobile**: Camera-first vertical layout with instant scrolling and flip-camera toggles.
-- **📦 Clean Product Service Abstraction**: Modular architecture separating UI components from data fetching. Integrates both a local inventory store (for pricing, expiry dates, and batch numbers) and the public Open Food Facts registry.
-- **🐍 Python Prototype Preserved**: The original `qr_code.py` OpenCV/pyzbar prototype remains intact in the repository root as a reference.
+## The stack
 
----
+- Next.js 15 (App Router) + TypeScript + Tailwind
+- Native `BarcodeDetector` API → `@zxing/library` fallback
+- Client-side only scanning (zero webcam frames leave your browser)
+- Next.js API route for product lookup (serverless, edge-cached)
 
-## 📐 System Architecture
+## Product data
 
-```
-[ Browser Camera Feed (WebRTC) ]
-              ↓
-  [ Client-Side Detection Engine ]
-   (Native BarcodeDetector / ZXing WASM)
-              ↓
-      [ Decoded Barcode ]
-              ↓
-    [ Product Lookup API ]
- (Local Store → Open Food Facts API)
-              ↓
-     [ Modern Product UI ]
+Two sources, in priority order:
+
+1. **Local inventory** (`web/src/services/productService.ts`) — has prices, expiry dates, batch numbers, images. This simulates your actual database.
+2. **Open Food Facts** — public registry for EAN/UPC codes. Returns name, brand, category, image. No prices, no expiry, no batches — because those don't exist in a GTIN.
+
+If a field isn't available, it says "Not available". I don't fake data.
+
+## Quick start
+
+```bash
+cd web
+npm install
+npm run dev
 ```
 
----
+Open localhost:3000, allow camera, point at a barcode.
 
-## 📁 Repository Structure
+**Test codes** (work without physical products):
+- `1234567890128` — Milk (has expiry, batch, price)
+- `0012345678905` — Ketchup
+- `9780132350884` — Clean Code (ISBN)
+- `QR_TEST_PRODUCT` — Dark chocolate (QR format)
+- Any real EAN-13 from your pantry → hits Open Food Facts
+
+## Project structure
 
 ```
 qr-code-scanner/
-├── qr_code.py                  # Preserved OpenCV reference prototype
-└── web/                        # Production Web Application (Next.js 15)
+├── qr_code.py              # Original OpenCV prototype (untouched)
+└── web/                    # Production web app
     ├── src/
     │   ├── app/
-    │   │   ├── api/
-    │   │   │   └── lookup/
-    │   │   │       └── [barcode]/
-    │   │   │           └── route.ts   # Next.js API route for product lookup
-    │   │   ├── globals.css
-    │   │   ├── layout.tsx
-    │   │   └── page.tsx               # Main Dashboard UI
+    │   │   ├── api/lookup/[barcode]/route.ts
+    │   │   ├── page.tsx            # Main dashboard
+    │   │   └── layout.tsx
     │   ├── components/
-    │   │   ├── BarcodeScanner.tsx     # Video feed, reticle & camera controls
-    │   │   ├── ProductCard.tsx        # Product details display card
-    │   │   └── RecentScans.tsx        # Scan history list
+    │   │   ├── BarcodeScanner.tsx  # Camera + reticle + controls
+    │   │   ├── ProductCard.tsx     # Product display
+    │   │   └── RecentScans.tsx     # History list
     │   ├── hooks/
-    │   │   └── useBarcodeScanner.ts   # Custom React hook for scanning loop
+    │   │   └── useBarcodeScanner.ts # Core scanning logic
     │   ├── services/
-    │   │   └── productService.ts      # Data abstraction & API integration
-    │   └── types/
-    │       └── product.ts             # TypeScript interfaces
-    ├── package.json
-    ├── tailwind.config.ts
-    └── tsconfig.json
+    │   │   └── productService.ts   # Data abstraction
+    │   └── types/product.ts
+    └── package.json
 ```
 
----
+## How the scanner works (the important part)
 
-## 🚀 Getting Started (Local Development)
+`web/src/hooks/useBarcodeScanner.ts`:
+- Requests rear camera (`facingMode: "environment"`) at 1280x720 — not 4K, fast enough
+- Draws video frames to an offscreen canvas at ~8fps (throttled, not every frame)
+- Tries native `BarcodeDetector` first → falls back to ZXing WASM
+- On match: plays 1200Hz beep via Web Audio API, flashes reticle green
+- Deduplicates: same barcode within 2.5s is ignored
+- Calls `onScan(barcode, format)` → UI handles the rest
 
-### Prerequisites
-- Node.js 18.x or higher
-- npm 9.x or higher
+Camera starts on mount, stops cleanly on unmount. Handles permission denied, no camera, unsupported browser.
 
-### Installation & Execution
+## Deploy to Vercel
 
-1. **Navigate to the web application directory**:
-   ```bash
-   cd web
-   ```
+1. Push to GitHub
+2. Import in Vercel → **Root Directory: `web`**
+3. Deploy
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
+The API route becomes a serverless function. Frontend is static. Done.
 
-3. **Start the development server**:
-   ```bash
-   npm run dev
-   ```
-
-4. **Open in Browser**:
-   Open [http://localhost:3000](http://localhost:3000) in your web browser. Ensure you grant camera permissions when prompted.
-
----
-
-## 🧪 Testing with Test Barcodes
-
-When testing without physical products on hand, you can hold up these barcodes to your camera or point your mobile device:
-
-| Barcode Value | Product Name | Source | Notes |
-| :--- | :--- | :--- | :--- |
-| `1234567890128` | Fresh Organic Whole Milk | Local Inventory | Includes Expiry & Batch Info |
-| `0012345678905` | Classic Tomato Ketchup | Local Inventory | Includes Price & Category |
-| `9780132350884` | Clean Code (Book) | Local Inventory | ISBN Format |
-| `QR_TEST_PRODUCT` | Dark Chocolate (72%) | Local Inventory | QR Code Format |
-| *Any Real EAN-13* | Real Groceries (e.g., Coke) | Open Food Facts | Fetches live public product data |
-
----
-
-## ⚙️ Environment Variables
-
-No environment variables are required for basic operation. However, if you add proprietary inventory APIs or database connections later, create a `.env.local` file inside `web/`:
-
-```env
-# Optional: Future PostgreSQL / Database strings or external API keys
-PRODUCT_DATABASE_URL=
-EXTERNAL_API_KEY=
-```
-
----
-
-## ☁️ Deployment to Vercel
-
-The application is completely Vercel-native.
-
-1. Push your repository to GitHub.
-2. Import the repository in [Vercel](https://vercel.com).
-3. Set the **Root Directory** to `web`.
-4. Click **Deploy**. Vercel will automatically run `npm run build` and provision serverless functions for `/api/lookup/[barcode]`.
-
----
-
-## ℹ️ Important Technical Note regarding Product Expiry Data
-
-A standard retail barcode (EAN-13, UPC-A) **only encodes the GTIN (Global Trade Item Number)**. It does **not** contain the product's expiration date or batch number.
-
-- **GS1 Digital Link / DataMatrix barcodes** used in pharmaceutical or advanced retail do contain batch/expiry numbers.
-- For standard barcodes, expiry and batch information **must come from an inventory database (e.g. ERP or PostgreSQL)**.
-- If an external public registry (like Open Food Facts) does not supply expiry date or batch number, the system displays **"Not available"** without making up fictitious dates.
-
----
-
-## 🐍 Running the Reference Python Prototype
-
-To run the original Python barcode scanner prototype:
+## The Python prototype
 
 ```bash
-# From repository root
 pip install opencv-python pyzbar
 python qr_code.py
 ```
+
+Still works. Kept as reference.
