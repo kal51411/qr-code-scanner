@@ -5,7 +5,8 @@ import {
   HybridBinarizer,
   BinaryBitmap,
   DecodeHintType,
-  BarcodeFormat
+  BarcodeFormat,
+  NotFoundException
 } from "@zxing/library";
 
 export type ScannerStatus = "idle" | "requesting" | "ready" | "scanning" | "error";
@@ -17,7 +18,6 @@ interface UseBarcodeScannerProps {
   cooldownMs?: number;
 }
 
-// Crisp scanner beep using Web Audio API
 export function playBeep() {
   try {
     const windowObj = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
@@ -32,11 +32,10 @@ export function playBeep() {
     gainNode.connect(audioCtx.destination);
 
     oscillator.type = "sine";
-    oscillator.frequency.value = 1200; // Crisp retail-style scanner beep (1200Hz)
-    gainNode.gain.setValueAtTime(0.12, audioCtx.currentTime); // Gentle audible level
+    oscillator.frequency.value = 1200;
+    gainNode.gain.setValueAtTime(0.12, audioCtx.currentTime);
 
     oscillator.start();
-    // Fast decay over 0.08 seconds for a sharp electronic sound
     gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
     oscillator.stop(audioCtx.currentTime + 0.08);
   } catch (err) {
@@ -66,14 +65,11 @@ export function useBarcodeScanner({
   const zxingReaderRef = useRef<MultiFormatReader | null>(null);
   const nativeDetectorRef = useRef<NativeBarcodeDetector | null>(null);
 
-  // Update scanner active state ref for the processing loop
   useEffect(() => {
     activeScannerRef.current = active;
   }, [active]);
 
-  // 1. Initialize Decoders (Native BarcodeDetector with Fallback to ZXing)
   useEffect(() => {
-    // Check if browser has native BarcodeDetector support
     const checkNativeSupport = async () => {
       if (typeof window !== "undefined" && "BarcodeDetector" in window) {
         try {
@@ -86,15 +82,14 @@ export function useBarcodeScanner({
               )
             });
             setIsNative(true);
+            console.log("[Scanner] Native BarcodeDetector initialized with formats:", supportedFormats);
             return;
           }
         } catch (e) {
-          console.warn("Native BarcodeDetector initialization failed, using fallback.", e);
+          console.warn("[Scanner] Native BarcodeDetector initialization failed, using ZXing fallback.", e);
         }
       }
 
-      // ZXing Fallback MultiFormatReader
-      const reader = new MultiFormatReader();
       const hints = new Map();
       hints.set(DecodeHintType.POSSIBLE_FORMATS, [
         BarcodeFormat.QR_CODE,
@@ -105,28 +100,27 @@ export function useBarcodeScanner({
         BarcodeFormat.CODE_128,
         BarcodeFormat.CODE_39
       ]);
+      hints.set(DecodeHintType.TRY_HARDER, true);
+
+      const reader = new MultiFormatReader();
       reader.setHints(hints);
       zxingReaderRef.current = reader;
       setIsNative(false);
+      console.log("[Scanner] ZXing MultiFormatReader initialized");
     };
 
     checkNativeSupport();
   }, []);
 
-  // 2. Start Camera function
   const startCamera = useCallback(async () => {
     setStatus("requesting");
     setErrorMsg(null);
 
-    // Stop any existing stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
     }
 
     try {
-      // Constraints optimized for speed and scanning focus:
-      // - Environment/rear camera preferred
-      // - Balanced resolution (no 4K, 720p is perfect and lightweight)
       const constraints: MediaStreamConstraints = {
         video: {
           facingMode: facingMode,
@@ -142,15 +136,16 @@ export function useBarcodeScanner({
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute("playsinline", "true"); // Critical for iOS Safari
+        videoRef.current.setAttribute("playsinline", "true");
         await videoRef.current.play();
         setStatus("scanning");
+        console.log("[Scanner] Camera started successfully");
       } else {
         setStatus("error");
         setErrorMsg("Video element reference is missing");
       }
     } catch (err) {
-      console.error("Camera access failed:", err);
+      console.error("[Scanner] Camera access failed:", err);
       setStatus("error");
       const error = err as { name?: string; message?: string };
       if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
@@ -163,7 +158,6 @@ export function useBarcodeScanner({
     }
   }, [facingMode, videoRef]);
 
-  // 3. Stop Camera function
   const stopCamera = useCallback(() => {
     if (animationFrameIdRef.current) {
       cancelAnimationFrame(animationFrameIdRef.current);
@@ -180,19 +174,17 @@ export function useBarcodeScanner({
     }
 
     setStatus("idle");
+    console.log("[Scanner] Camera stopped");
   }, [videoRef]);
 
-  // Toggle Camera (rear vs front)
   const toggleCamera = useCallback(() => {
     setFacingMode((prev) => (prev === "environment" ? "user" : "environment"));
   }, []);
 
-  // 4. Core Frame-by-Frame Scanning Loop
   useEffect(() => {
     let lastScanTime = 0;
-    const scanIntervalMs = 120; // 8 scans/second - highly responsive yet extremely light on CPU/battery
+    const scanIntervalMs = 120;
 
-    // Create offscreen canvas once
     const offscreenCanvas = typeof document !== "undefined" ? document.createElement("canvas") : null;
     const offscreenCtx = offscreenCanvas ? offscreenCanvas.getContext("2d", { willReadFrequently: true }) : null;
 
@@ -202,7 +194,6 @@ export function useBarcodeScanner({
         return;
       }
 
-      // Respect the scanning interval to save battery and CPU
       if (timestamp - lastScanTime < scanIntervalMs) {
         animationFrameIdRef.current = requestAnimationFrame(processFrame);
         return;
@@ -212,13 +203,11 @@ export function useBarcodeScanner({
       if (video.readyState === video.HAVE_ENOUGH_DATA) {
         lastScanTime = timestamp;
 
-        // Scale canvas to video frame size (typically 1280x720 or 640x480)
         if (offscreenCanvas.width !== video.videoWidth) {
           offscreenCanvas.width = video.videoWidth;
           offscreenCanvas.height = video.videoHeight;
         }
 
-        // Draw video frame to offscreen canvas
         offscreenCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
 
         let decodedValue: string | null = null;
@@ -226,14 +215,13 @@ export function useBarcodeScanner({
 
         try {
           if (nativeDetectorRef.current) {
-            // A. Native BarcodeDetector Path (Fastest, hardware-accelerated)
             const barcodes = await nativeDetectorRef.current.detect(offscreenCanvas);
             if (barcodes && barcodes.length > 0) {
               decodedValue = barcodes[0].rawValue;
               decodedFormat = barcodes[0].format?.toUpperCase();
+              console.log("[Scanner] Native detector found:", decodedValue, decodedFormat);
             }
           } else if (zxingReaderRef.current) {
-            // B. ZXing Fallback Path (Universal, robust)
             const luminanceSource = new HTMLCanvasElementLuminanceSource(offscreenCanvas);
             const binarizer = new HybridBinarizer(luminanceSource);
             const binaryBitmap = new BinaryBitmap(binarizer);
@@ -241,23 +229,23 @@ export function useBarcodeScanner({
             const result = zxingReaderRef.current.decodeWithState(binaryBitmap);
             decodedValue = result.getText();
             decodedFormat = result.getBarcodeFormat()?.toString()?.toUpperCase();
+            console.log("[Scanner] ZXing found:", decodedValue, decodedFormat);
           }
-        } catch {
-          // No barcode detected in this frame - completely normal, ignore error and continue
+        } catch (err) {
+          if (!(err instanceof NotFoundException)) {
+            console.warn("[Scanner] Frame decode error:", err);
+          }
         }
 
-        // Handle decoded barcode
         if (decodedValue) {
           const cleanBarcode = decodedValue.trim();
           const now = Date.now();
 
-          // Apply deduplication & cooldown for identical scans
           const lastScanned = lastScannedBarcodeRef.current;
           const isIdentical = lastScanned && lastScanned.barcode === cleanBarcode;
           const isWithinCooldown = lastScanned && (now - lastScanned.timestamp < cooldownMs);
 
           if (!isIdentical || !isWithinCooldown) {
-            // Clean scan! Play beep & invoke callback
             playBeep();
             lastScannedBarcodeRef.current = { barcode: cleanBarcode, timestamp: now };
             onScan(cleanBarcode, decodedFormat);
@@ -280,7 +268,6 @@ export function useBarcodeScanner({
     };
   }, [status, onScan, cooldownMs, videoRef]);
 
-  // 5. Automatic start on mount & stop on unmount
   useEffect(() => {
     startCamera();
     return () => {
